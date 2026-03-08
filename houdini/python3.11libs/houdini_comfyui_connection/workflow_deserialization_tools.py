@@ -54,8 +54,8 @@ class SubgraphDefinition(NodeDefinition):
     links_dict: dict[int, Link]
 
 
-def create_network_from_workflow(host: str, parent_node: hou.Node, workflow: dict) -> dict[str, hou.Node]:
-    node_definitions = _parse_node_data(get_node_definitions(host))
+def create_network_from_workflow(host: str, parent_node: hou.Node, workflow: dict, api_key: str|None = None) -> dict[str, hou.Node]:
+    node_definitions = _parse_node_data(get_node_definitions(host, api_key=api_key))
     subgraph_definitions = _parse_subgraph_data(workflow.get('definitions', {}).get('subgraphs', []))
     return _create_network_from_workflow_nodes(
         node_definitions,
@@ -469,8 +469,8 @@ def _set_node_input_value(node: hou.Node, input_name: str, value):
     else:
         raise RuntimeError('')
 
-def create_network_from_prompt(host: str, parent_node: hou.Node, prompt) -> dict[str, hou.Node]:
-    node_definitions = get_node_definitions(host)
+def create_network_from_prompt(host: str, parent_node: hou.Node, prompt, api_key: str|None = None) -> dict[str, hou.Node]:
+    node_definitions = get_node_definitions(host, api_key=api_key)
 
     nodes = {}
     for node_id, node_data in prompt.items():

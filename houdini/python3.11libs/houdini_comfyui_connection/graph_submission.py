@@ -7,6 +7,12 @@ import hou
 poll_interval = 1
 
 
+def _api_headers(api_key: str|None = None) -> dict:
+    if api_key:
+        return {'X-API-Key': api_key}
+    return {}
+
+
 class BadInputSubstituteError(RuntimeError):
     pass
 
@@ -102,19 +108,19 @@ def submit_graph(host: str, graph_json_data: dict, api_key: str|None = None):
     return resp_data['prompt_id'], resp_data['node_errors']
 
         
-def check_if_prompt_done_and_get_result(host: str, prompt_id: str, output_ids=None):
+def check_if_prompt_done_and_get_result(host: str, prompt_id: str, output_ids=None, api_key: str|None = None):
     # otherwise check if it's running or queued
-    resp = requests.get(f'{host}/queue')
+    resp = requests.get(f'{host}/queue', headers=_api_headers(api_key))
     if resp.status_code != 200:
         raise RuntimeError(f'oh no, server said nono {resp.status_code}')
     data = resp.json()
     for prompt in data['queue_running'] + data['queue_pending']:
         if prompt[1] == prompt_id:
             return None
-    
+
     # check if it's done
     # note, check order matters, the other way around we might get a race
-    resp = requests.get(f'{host}/history/{prompt_id}')
+    resp = requests.get(f'{host}/history/{prompt_id}', headers=_api_headers(api_key))
     if resp.status_code != 200:
         raise RuntimeError(f'oh no, server said nono {resp.status_code}')
     data = resp.json()
@@ -146,26 +152,27 @@ def submit_graph_and_get_result(host: str, graph_data: dict, long_op=None, api_k
         if long_op:
             long_op.updateLongProgress(-1, "waiting for ComfyUI to finish")
         while True:
-            if (res := check_if_prompt_done_and_get_result(host, prompt_id)) is not None:
+            if (res := check_if_prompt_done_and_get_result(host, prompt_id, api_key=api_key)) is not None:
                 break
             time.sleep(poll_interval)
             if long_op:
                 long_op.updateProgress()
     
     except hou.OperationInterrupted:
-        cancel_prompt(host, prompt_id)
+        cancel_prompt(host, prompt_id, api_key=api_key)
         raise
 
     return res, prompt_id
 
 
-def download_result(host: str, filename: str, subfolder: str, dest_path: Path):
+def download_result(host: str, filename: str, subfolder: str, dest_path: Path, api_key: str|None = None):
     resp = requests.get(
         f'{host}/view',
         params = {
             'filename': filename,
             'subfolder': subfolder,
-        }
+        },
+        headers=_api_headers(api_key),
     )
     if resp.status_code != 200:
         raise RuntimeError(f'oh no, server said nono {resp.status_code}')
@@ -175,22 +182,23 @@ def download_result(host: str, filename: str, subfolder: str, dest_path: Path):
         f.write(resp.content)
 
 
-def delete_input_image(host: str, filename: str, subfolder: str):
-    return delete_image(host, filename, subfolder, 'input')
+def delete_input_image(host: str, filename: str, subfolder: str, api_key: str|None = None):
+    return delete_image(host, filename, subfolder, 'input', api_key=api_key)
 
 
-def delete_output_image(host: str, filename: str, subfolder: str):
-    return delete_image(host, filename, subfolder, 'output')
+def delete_output_image(host: str, filename: str, subfolder: str, api_key: str|None = None):
+    return delete_image(host, filename, subfolder, 'output', api_key=api_key)
 
 
-def delete_image(host: str, filename: str, subfolder: str, img_role: str):
+def delete_image(host: str, filename: str, subfolder: str, img_role: str, api_key: str|None = None):
     resp = requests.delete(
         f'{host}/sidefx_houdini/image',
         json = {
             'type': img_role,
             'image_name': filename,
             'subfolder': subfolder,
-            }
+            },
+        headers=_api_headers(api_key),
         )
 
     if resp.status_code == 405:
@@ -201,23 +209,25 @@ def delete_image(host: str, filename: str, subfolder: str, img_role: str):
         raise RuntimeError(f'oh no, server said nono {resp.status_code}')
 
 
-def delete_prompt_history(host: str, prompt: str):
+def delete_prompt_history(host: str, prompt: str, api_key: str|None = None):
     resp = requests.post(
         f'{host}/history',
         json = {
             'delete': [prompt],
-        }
+        },
+        headers=_api_headers(api_key),
     )
 
     if resp.status_code != 200:
         raise RuntimeError(f'oh no, server said nono {resp.status_code}')
 
-def cancel_prompt(host: str, prompt: str):
+def cancel_prompt(host: str, prompt: str, api_key: str|None = None):
     resp = requests.post(
         f'{host}/sidefx_houdini/interrupt',
         json = {
             'prompt_id': prompt
-        }
+        },
+        headers=_api_headers(api_key),
     )
 
     if resp.status_code == 405:

@@ -696,7 +696,7 @@ def compute_compound_graph_node(node, long_op=None, override_output_node=None, o
         
         if node.parm('image_batch_index') is None:
             # 1.2 compatibility
-            download_result(host, res[key]['images'][0]['filename'], res[key]['images'][0]['subfolder'], outpath)
+            download_result(host, res[key]['images'][0]['filename'], res[key]['images'][0]['subfolder'], outpath, api_key=api_key or None)
         else:
             for i, data in enumerate(res[key].get('images', res[key].get('3d', ()))):
                 # we rely on batch id being last \.\d+\. in the filename
@@ -706,7 +706,7 @@ def compute_compound_graph_node(node, long_op=None, override_output_node=None, o
                 debug(f'removing {local_path}')
                 local_path.unlink(missing_ok=True)  # remove existing before downloading new file
                 debug(f'downloading image {i} of batch: {local_path}')
-                download_result(host, data['filename'], data['subfolder'], local_path)
+                download_result(host, data['filename'], data['subfolder'], local_path, api_key=api_key or None)
         outnode.parm('reload').pressButton()
 
     if do_cleanup:
@@ -726,6 +726,7 @@ def compute_compound_graph_node(node, long_op=None, override_output_node=None, o
                     host,
                     upload_filename,
                     upload_subdir,
+                    api_key=api_key or None,
                 )
             except FailedToDeleteImage as e:
                 # we don't fail on cleanup error
@@ -735,7 +736,7 @@ def compute_compound_graph_node(node, long_op=None, override_output_node=None, o
 
         if long_op:
             long_op.updateLongProgress(-1, "Cleaning up prompt history")
-        delete_prompt_history(host, prompt_id)
+        delete_prompt_history(host, prompt_id, api_key=api_key or None)
         #  comfy backend cache does not check image existance, and there is no clear stable way of cleaning cache,
         #  so we have to leave output images as is for now
 

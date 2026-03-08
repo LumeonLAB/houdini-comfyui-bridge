@@ -1,0 +1,391 @@
+"""
+Lum3on ComfyUI Render ROP — PythonModule
+
+Callbacks for the ROP HDA. Handles:
+- Render button callback
+- Workflow loading and reloading
+- Dynamic parameter generation from workflow
+- Render pass auto-detection
+"""
+import os
+import json
+import traceback
+import hou
+from pathlib import Path
+
+from houdini_comfyui_connection.rop_render_core import (
+    render_frame,
+    render_frame_range,
+)
+from houdini_comfyui_connection.workflow_parser import (
+    parse_workflow,
+    ParsedWorkflow,
+    ParamInfo,
+)
+from houdini_comfyui_connection.compound_graph_tools import get_node_definitions
+from houdini_comfyui_connection.graph_submission import GraphValidationError
+from houdini_comfyui_connection.ui_tools import show_error
+
+
+# ---- Render Callback -------------------------------------------------------
+
+def render_callback(node):
+    """Called when the artist presses the Render button."""
+    host = node.evalParm("base_url").rstrip("/ ")
+    api_key = node.evalParm("comfyui_api_key") or None
+    workflow_file = node.evalParm("workflow_file")
+
+    if not workflow_file:
+        show_error("No workflow file selected")
+        return
+
+    wf_path = Path(hou.text.expandString(workflow_file))
+    if not wf_path.exists():
+        show_error(f"Workflow file not found: {wf_path}")
+        return
+
+    # Output settings
+    output_dir = Path(hou.text.expandString(node.evalParm("output_dir")))
+    output_prefix = node.evalParm("output_prefix")
+    cleanup = bool(node.evalParm("cleanup_server"))
+
+    # Camera
+    camera_path = node.evalParm("camera")
+    if not camera_path or not hou.node(camera_path):
+        camera_path = None
+
+    resolution = (
+        node.evalParm("res_x"),
+        node.evalParm("res_y"),
+    )
+
+    # Collect parameter overrides from dynamic parms
+    param_overrides = _collect_param_overrides(node)
+
+    # Collect active render passes
+    pass_keys = _collect_active_passes(node)
+
+    # Frame range
+    trange = node.evalParm("trange")
+
+    try:
+        if trange == 0:
+            # Current frame
+            with hou.InterruptableOperation(
+                "Rendering with ComfyUI...", "Rendering...",
+                open_interrupt_dialog=True,
+            ) as op:
+                result = render_frame(
+                    host, wf_path, hou.frame(), output_dir, output_prefix,
+                    camera_path=camera_path,
+                    resolution=resolution,
+                    param_overrides=param_overrides,
+                    output_pass_keys=pass_keys,
+                    api_key=api_key,
+                    cleanup=cleanup,
+                    long_op=op,
+                )
+                _report_success(result)
+        else:
+            # Frame range
+            f_start = node.evalParm("f1")
+            f_end = node.evalParm("f2")
+            f_step = node.evalParm("f3")
+
+            with hou.InterruptableOperation(
+                "Rendering frame range with ComfyUI...",
+                "Rendering...",
+                open_interrupt_dialog=True,
+            ) as op:
+                results = render_frame_range(
+                    host, wf_path, f_start, f_end, f_step,
+                    output_dir, output_prefix,
+                    camera_path=camera_path,
+                    resolution=resolution,
+                    param_overrides=param_overrides,
+                    output_pass_keys=pass_keys,
+                    api_key=api_key,
+                    cleanup=cleanup,
+                    long_op=op,
+                )
+                total_images = sum(len(r) for r in results)
+                hou.ui.displayMessage(
+                    f"Render complete!\n{len(results)} frames, {total_images} images",
+                    title="ComfyUI Render",
+                )
+
+    except GraphValidationError as e:
+        show_error(
+            e.format_error_summary(),
+            details=json.dumps(e.raw_error, indent=4),
+            title="Workflow Validation Error",
+        )
+    except hou.OperationInterrupted:
+        hou.ui.displayMessage("Render cancelled", severity=hou.severityType.Warning)
+    except Exception as e:
+        show_error(f"Render failed: {e}", details=traceback.format_exc())
+
+
+def _report_success(result):
+    """Show success message with output paths."""
+    if not result:
+        hou.ui.displayMessage("Render complete but no output files were created",
+                              severity=hou.severityType.Warning)
+        return
+
+    paths = "\n".join(str(p) for p in result.values())
+    hou.ui.displayMessage(
+        f"Render complete!\n\n{paths}",
+        title="ComfyUI Render",
+    )
+
+
+# ---- Workflow Loading ------------------------------------------------------
+
+def reload_workflow_callback(node):
+    """Called when user presses Reload Workflow or changes workflow file."""
+    workflow_file = node.evalParm("workflow_file")
+    if not workflow_file:
+        return
+
+    wf_path = Path(hou.text.expandString(workflow_file))
+    if not wf_path.exists():
+        show_error(f"Workflow not found: {wf_path}")
+        return
+
+    host = node.evalParm("base_url").rstrip("/ ")
+    api_key = node.evalParm("comfyui_api_key") or None
+
+    try:
+        # Try to get node defs from server for better param typing
+        node_defs = None
+        try:
+            node_defs = get_node_definitions(host, api_key=api_key)
+        except Exception:
+            pass  # Server might not be running, that's ok
+
+        parsed = parse_workflow(wf_path, node_defs=node_defs)
+
+        # Update render passes
+        _populate_render_passes(node, parsed)
+
+        # Update dynamic parameters
+        _populate_workflow_params(node, parsed)
+
+        # Show summary
+        hou.ui.displayMessage(
+            f"Workflow loaded:\n"
+            f"  Nodes: {len(parsed.prompt)}\n"
+            f"  Image Inputs: {len(parsed.image_inputs)}\n"
+            f"  Outputs: {len(parsed.outputs)}\n"
+            f"  Parameters: {len(parsed.params)}\n"
+            f"  Node Types: {len(parsed.required_node_types)}",
+            title="Workflow Loaded",
+        )
+    except Exception as e:
+        show_error(f"Failed to load workflow: {e}", details=traceback.format_exc())
+
+
+def _populate_render_passes(node, parsed: ParsedWorkflow):
+    """Fill the render passes multiparm from detected output nodes."""
+    # Clear existing passes
+    num_parm = node.parm("num_passes")
+    if num_parm is None:
+        return
+
+    # Set count to 0 first to clear, then add new ones
+    num_parm.set(0)
+    num_parm.set(len(parsed.outputs))
+
+    for i, output in enumerate(parsed.outputs, 1):
+        name_parm = node.parm(f"pass_name_{i}")
+        key_parm = node.parm(f"pass_node_key_{i}")
+        enabled_parm = node.parm(f"pass_enabled_{i}")
+
+        if name_parm:
+            name_parm.set(output.node_title)
+        if key_parm:
+            key_parm.set(output.node_key)
+        if enabled_parm:
+            enabled_parm.set(1)
+
+
+def _populate_workflow_params(node, parsed: ParsedWorkflow):
+    """Create spare parameters on the node for tweakable workflow values."""
+    # Remove old spare parms from previous workflow
+    ptg = node.parmTemplateGroup()
+    existing_folder = ptg.findFolder("Workflow Parameters")
+    if existing_folder:
+        ptg.remove(existing_folder)
+
+    if not parsed.params:
+        node.setParmTemplateGroup(ptg)
+        return
+
+    # Group params by node title
+    by_node: dict[str, list[ParamInfo]] = {}
+    for p in parsed.params:
+        by_node.setdefault(p.node_title, []).append(p)
+
+    folder_templates = []
+
+    for node_title, params in by_node.items():
+        node_templates = []
+
+        for p in params:
+            parm_name = f"wfp_{p.node_key}_{_sanitize(p.input_name)}"
+            label = p.input_name.replace("_", " ").title()
+
+            if p.value_type == "INT":
+                tmpl = hou.IntParmTemplate(
+                    parm_name, label, 1,
+                    default_value=(int(p.default_value) if p.default_value is not None else 0,),
+                    min=int(p.min_val) if p.min_val is not None else 0,
+                    max=int(p.max_val) if p.max_val is not None else 100,
+                )
+            elif p.value_type == "FLOAT":
+                tmpl = hou.FloatParmTemplate(
+                    parm_name, label, 1,
+                    default_value=(float(p.default_value) if p.default_value is not None else 0.0,),
+                    min=float(p.min_val) if p.min_val is not None else 0.0,
+                    max=float(p.max_val) if p.max_val is not None else 1.0,
+                )
+            elif p.value_type == "BOOLEAN":
+                tmpl = hou.ToggleParmTemplate(
+                    parm_name, label,
+                    default_value=bool(p.default_value),
+                )
+            elif p.value_type == "COMBO" and p.options:
+                menu_items = p.options
+                menu_labels = p.options
+                default_idx = 0
+                if p.default_value in p.options:
+                    default_idx = p.options.index(p.default_value)
+                tmpl = hou.MenuParmTemplate(
+                    parm_name, label,
+                    menu_items, menu_labels,
+                    default_value=default_idx,
+                )
+            else:
+                # STRING or fallback
+                is_multiline = isinstance(p.default_value, str) and (
+                    len(str(p.default_value)) > 80 or "\n" in str(p.default_value)
+                )
+                tmpl = hou.StringParmTemplate(
+                    parm_name, label, 1,
+                    default_value=(str(p.default_value) if p.default_value is not None else "",),
+                )
+                if is_multiline:
+                    tmpl.setTags({"editor": "1"})
+
+            # Store metadata for mapping back to workflow
+            tmpl.setHelp(f"Node: {p.node_title} | Input: {p.input_name}")
+            node_templates.append(tmpl)
+
+        if node_templates:
+            node_folder = hou.FolderParmTemplate(
+                f"wf_node_{_sanitize(node_title)}",
+                node_title,
+                parm_templates=node_templates,
+                folder_type=hou.folderType.Collapsible,
+            )
+            folder_templates.append(node_folder)
+
+    if folder_templates:
+        wf_folder = hou.FolderParmTemplate(
+            "workflow_params_folder",
+            "Workflow Parameters",
+            parm_templates=folder_templates,
+            folder_type=hou.folderType.Tabs,
+        )
+        ptg.append(wf_folder)
+
+    node.setParmTemplateGroup(ptg)
+
+
+def _sanitize(name: str) -> str:
+    """Sanitize a name for use as a Houdini parm name."""
+    return "".join(c if c.isalnum() or c == "_" else "_" for c in name).lower()
+
+
+# ---- Parameter Override Collection -----------------------------------------
+
+def _collect_param_overrides(node) -> dict[tuple[str, str], object]:
+    """Read dynamic workflow parms and build overrides dict."""
+    overrides = {}
+
+    ptg = node.parmTemplateGroup()
+    wf_folder = ptg.findFolder("Workflow Parameters")
+    if wf_folder is None:
+        return overrides
+
+    for parm in node.spareParms():
+        name = parm.name()
+        if not name.startswith("wfp_"):
+            continue
+
+        # Parse node_key and input_name from parm name
+        # Format: wfp_{node_key}_{input_name}
+        parts = name[4:]  # strip "wfp_"
+        # node_key is the first segment before underscore
+        underscore_idx = parts.index("_")
+        node_key = parts[:underscore_idx]
+        input_name_sanitized = parts[underscore_idx + 1:]
+
+        # Get original input_name from help text
+        help_text = parm.parmTemplate().help()
+        if "Input: " in help_text:
+            input_name = help_text.split("Input: ")[-1]
+        else:
+            input_name = input_name_sanitized
+
+        # Get value based on type
+        tmpl = parm.parmTemplate()
+        if isinstance(tmpl, hou.IntParmTemplate):
+            overrides[(node_key, input_name)] = parm.evalAsInt()
+        elif isinstance(tmpl, hou.FloatParmTemplate):
+            overrides[(node_key, input_name)] = parm.evalAsFloat()
+        elif isinstance(tmpl, hou.ToggleParmTemplate):
+            overrides[(node_key, input_name)] = bool(parm.evalAsInt())
+        elif isinstance(tmpl, hou.MenuParmTemplate):
+            overrides[(node_key, input_name)] = parm.evalAsString()
+        else:
+            overrides[(node_key, input_name)] = parm.evalAsString()
+
+    return overrides
+
+
+def _collect_active_passes(node) -> list[str] | None:
+    """Get list of enabled render pass node keys, or None for all."""
+    num_parm = node.parm("num_passes")
+    if num_parm is None or num_parm.evalAsInt() == 0:
+        return None
+
+    keys = []
+    for i in range(1, num_parm.evalAsInt() + 1):
+        enabled = node.parm(f"pass_enabled_{i}")
+        key = node.parm(f"pass_node_key_{i}")
+        if enabled and key and enabled.evalAsInt():
+            keys.append(key.evalAsString())
+
+    return keys if keys else None
+
+
+# ---- Workflow File Menu ----------------------------------------------------
+
+def workflow_file_menu(node):
+    """Generate menu items for workflow file picker from workflow directory."""
+    wf_dir = node.evalParm("workflow_dir")
+    if not wf_dir:
+        return []
+
+    wf_path = Path(hou.text.expandString(wf_dir))
+    if not wf_path.is_dir():
+        return []
+
+    items = []
+    for f in sorted(wf_path.glob("*.json")):
+        items.append(str(f))
+        items.append(f.stem)
+
+    return items

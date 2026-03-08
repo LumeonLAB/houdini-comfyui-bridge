@@ -177,12 +177,13 @@ def update_input_text_values_callback(node, input_muliparm_index, *, update_tool
     assert parent_submitter is not None
 
     host = parent_submitter.evalParm('base_url').rstrip('/')
+    api_key = parent_submitter.evalParm('comfyui_api_key') or None
     graph = json.loads(node.evalParm('cui_graph'))
     node_data = graph[title_to_key(graph, node.evalParm(f'cui_i_node_title_{input_muliparm_index}'))]
     input_name = node.evalParm(f'cui_i_node_input_{input_muliparm_index}')
     node_type = node_data['class_type']
 
-    def_data = get_single_node_definition(host, node_type)
+    def_data = get_single_node_definition(host, node_type, api_key=api_key)
 
     input_data = def_data.get('input', {})
     input_def = {
@@ -229,4 +230,5 @@ def update_input_text_values_callback(node, input_muliparm_index, *, update_tool
             None,
             tool_name_prefix=f'{parent_submitter.type().nameWithCategory()}::',
             network_op_type=node.type().nameWithCategory(),
+            api_key=api_key,
         )

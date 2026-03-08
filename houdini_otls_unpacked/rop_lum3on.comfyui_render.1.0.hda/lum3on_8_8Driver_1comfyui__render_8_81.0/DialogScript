@@ -1,0 +1,186 @@
+# Dialog script for lum3on::comfyui_render::1.0
+
+{
+    name	lum3on::comfyui_render::1.0
+    script	lum3on::comfyui_render::1.0
+    label	"Lum3on ComfyUI Render"
+
+    help {
+        "Render through ComfyUI workflows directly from Houdini."
+        "Load a workflow, assign a camera, and hit Render."
+    }
+
+    parm {
+        name    "execute"
+        label   "Render"
+        type    button
+        default { "0" }
+        parmtag { "script_callback" "hou.phm().render_callback(hou.pwd())" }
+        parmtag { "script_callback_language" "python" }
+    }
+
+    group {
+        name    "connection_folder"
+        label   "Connection"
+
+        parm {
+            name    "base_url"
+            label   "Server URL"
+            type    string
+            default { "http://127.0.0.1:8188" }
+            help    "ComfyUI server address"
+        }
+        parm {
+            name    "comfyui_api_key"
+            label   "API Key"
+            type    string
+            default { "" }
+            help    "Optional API key for ComfyUI server authentication"
+        }
+    }
+
+    group {
+        name    "workflow_folder"
+        label   "Workflow"
+
+        parm {
+            name    "workflow_dir"
+            label   "Workflows Directory"
+            type    directory
+            default { "$COMFYUI_WORKFLOWS" }
+            help    "Folder containing ComfyUI workflow JSON files"
+        }
+        parm {
+            name    "workflow_file"
+            label   "Workflow"
+            type    file
+            default { "" }
+            help    "Select a ComfyUI workflow JSON file"
+            parmtag { "filechooser_pattern" "*.json" }
+        }
+        parm {
+            name    "reload_workflow"
+            label   "Load Workflow"
+            type    button
+            default { "0" }
+            parmtag { "script_callback" "hou.phm().reload_workflow_callback(hou.pwd())" }
+            parmtag { "script_callback_language" "python" }
+            help    "Parse workflow and generate parameters"
+        }
+    }
+
+    group {
+        name    "render_folder"
+        label   "Render"
+
+        parm {
+            name    "camera"
+            label   "Camera"
+            type    oppath
+            default { "/obj/cam1" }
+            help    "Camera to render. Leave empty to skip camera input."
+            parmtag { "opfilter" "!!OBJ/CAMERA!!" }
+        }
+        parm {
+            name    "res_x"
+            label   "Resolution X"
+            type    integer
+            default { "1024" }
+            range   { 64! 4096 }
+        }
+        parm {
+            name    "res_y"
+            label   "Resolution Y"
+            type    integer
+            default { "1024" }
+            range   { 64! 4096 }
+        }
+        parm {
+            name    "trange"
+            label   "Frame Range"
+            type    ordinal
+            default { "0" }
+            menu {
+                "0" "Render Current Frame"
+                "1" "Render Frame Range"
+            }
+        }
+        parm {
+            name    "f1"
+            label   "Start Frame"
+            type    float
+            default { "$FSTART" }
+            hidewhen "{ trange == 0 }"
+        }
+        parm {
+            name    "f2"
+            label   "End Frame"
+            type    float
+            default { "$FEND" }
+            hidewhen "{ trange == 0 }"
+        }
+        parm {
+            name    "f3"
+            label   "Frame Step"
+            type    float
+            default { "1" }
+            hidewhen "{ trange == 0 }"
+        }
+    }
+
+    group {
+        name    "output_folder"
+        label   "Output"
+
+        parm {
+            name    "output_dir"
+            label   "Output Directory"
+            type    directory
+            default { "$HIP/render/comfyui/$HIPNAME" }
+        }
+        parm {
+            name    "output_prefix"
+            label   "Output Prefix"
+            type    string
+            default { "render_$F4" }
+            help    "Filename prefix. Use $F4 for 4-digit frame padding."
+        }
+        parm {
+            name    "cleanup_server"
+            label   "Cleanup Server Images"
+            type    toggle
+            default { "1" }
+            help    "Remove temporary images from ComfyUI server after render"
+        }
+    }
+
+    group {
+        name    "passes_folder"
+        label   "Render Passes"
+
+        multiparm {
+            name    "num_passes"
+            label   "Passes"
+            default 0
+
+            parm {
+                name    "pass_name_#"
+                label   "Pass Name"
+                type    string
+                default { "" }
+            }
+            parm {
+                name    "pass_node_key_#"
+                label   "Output Node Key"
+                type    string
+                default { "" }
+            }
+            parm {
+                name    "pass_enabled_#"
+                label   "Enabled"
+                type    toggle
+                default { "1" }
+            }
+        }
+    }
+}

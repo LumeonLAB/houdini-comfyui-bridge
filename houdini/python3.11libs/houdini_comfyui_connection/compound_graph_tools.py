@@ -313,8 +313,14 @@ def _extra_input_proc(graph_node, i, input_type):
         graph_node.parm(f'cui_i_meta_bakecc_{i+1}').set(False)
 
 
-def get_node_definitions(host: str) -> dict:
-    resp = requests.get(f'{host}/object_info')
+def _api_headers(api_key: str|None = None) -> dict:
+    if api_key:
+        return {'X-API-Key': api_key}
+    return {}
+
+
+def get_node_definitions(host: str, api_key: str|None = None) -> dict:
+    resp = requests.get(f'{host}/object_info', headers=_api_headers(api_key))
 
     if resp.status_code != 200:
         raise RuntimeError(f'oh no, server said nono {resp.status_code}')
@@ -322,8 +328,8 @@ def get_node_definitions(host: str) -> dict:
     return resp.json()
 
 
-def get_single_node_definition(host: str, node_type: str) -> dict:
-    resp = requests.get(f'{host}/object_info/{node_type}')
+def get_single_node_definition(host: str, node_type: str, api_key: str|None = None) -> dict:
+    resp = requests.get(f'{host}/object_info/{node_type}', headers=_api_headers(api_key))
 
     if resp.status_code != 200:
         raise RuntimeError(f'oh no, server said nono {resp.status_code}')
@@ -341,16 +347,17 @@ def find_nearest_compound_graph_parent(node: hou.Node) -> hou.Node|None:
     return node
 
 
-def update_comfy_nodes_definitions(host: str, long_op=None, *, 
+def update_comfy_nodes_definitions(host: str, long_op=None, *,
         tool_name_prefix='xxx::Cop/comfyui_compound_graph_submit::1.2::',
         network_op_type='xxx::Cop/comfyui_compound_graph_submit::1.2::xxx::Cop/comfyui_partial_graph::1.2',
         network_output_op_type='xxx::Cop/comfyui_compound_graph_submit::1.2::xxx::Cop/comfyui_partial_graph_outputs::1.0',
         explicit_node_types: list[str]|None = None,
+        api_key: str|None = None,
     ):
     if explicit_node_types is None:  # get all definitions
-        node_definitions = get_node_definitions(host)
+        node_definitions = get_node_definitions(host, api_key=api_key)
     else:
-        node_definitions = {x: get_single_node_definition(host, x) for x in explicit_node_types}
+        node_definitions = {x: get_single_node_definition(host, x, api_key=api_key) for x in explicit_node_types}
     definitions_count = len(node_definitions)
 
     shelf_filepath = os.path.join(hou.text.expandString('$HOUDINI_USER_PREF_DIR'), 'toolbar', 'comfyui_crap.shelf')

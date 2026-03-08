@@ -27,6 +27,7 @@ def dropAccept(file_list):
     if (gnode := parent_node.node('..')) is None or gnode.type().nameComponents()[2] != 'comfyui_compound_graph_submit':
         return False
     host = gnode.evalParm('base_url').rstrip('/ ')
+    api_key = gnode.evalParm('comfyui_api_key') or None
 
     # we only accept single png file
     if len(file_list) != 1 or not file_list:
@@ -69,7 +70,7 @@ def dropAccept(file_list):
         # we prefer prompt if present as it's better supported for now
         if prompt:
             try:
-                nodes = create_network_from_prompt(host, parent_node, prompt)
+                nodes = create_network_from_prompt(host, parent_node, prompt, api_key=api_key)
             except MissingNodeDefinitionError as e:
                 pack_name = None
                 if workflow and e.node_id is not None:
@@ -100,7 +101,7 @@ def dropAccept(file_list):
         else:
             # so no prompt provided, just the workflow
             try:
-                nodes = create_network_from_workflow(host, parent_node, workflow)
+                nodes = create_network_from_workflow(host, parent_node, workflow, api_key=api_key)
             except MissingNodeDefinitionError as e:
                 hou.ui.displayMessage(f'Missing node type definition for "{e.node_type}" from node pack "{e.pack_name}"')
                 udp.do_undo_on_exit = True
